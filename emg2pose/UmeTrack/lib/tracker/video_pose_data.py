@@ -10,12 +10,12 @@ from dataclasses import dataclass
 from typing import Iterator, List
 
 import av
-import lib.data_utils.fs as fs
+from ..data_utils import fs
 import numpy as np
 import torch
-from lib.common.camera import CameraModel, read_camera_from_json
-from lib.common.hand import HandModel
-from lib.tracker.tracker import InputFrame, ViewData
+from ..common.camera import CameraModel, read_camera_from_json
+from ..common.hand import HandModel
+from .tracker import InputFrame, ViewData
 
 from .tracking_result import SingleHandPose
 
