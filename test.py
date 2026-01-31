@@ -8,8 +8,10 @@ import h5py
 import numpy as np
 import torch
 
-f = h5py.File("/Users/zanderbaker/emg2pose_dataset_mini/2022-12-06-1670313600-e3096-cv-emg-pose-train@2-recording-1_left.hdf5", "r")
+TARGET = "2022-12-06-1670313600-e3096-cv-emg-pose-train@2-recording-1_left.hdf5"
 
-a = f.get("emg2pose")
-print(a.get("timeseries").dtype.fields)
-print(a.get("timeseries")["emg"].shape)
+f = h5py.File(f"/Users/zanderbaker/emg2pose_dataset_mini/{TARGET}", "r")
+
+data = f.get("emg2pose")
+emg_np = data.get("timeseries")["emg"]
+print(emg_np.shape)
