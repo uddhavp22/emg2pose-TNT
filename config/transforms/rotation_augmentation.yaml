@@ -2,11 +2,16 @@
 to_tensor:
   _target_: emg2pose.transforms.ExtractToTensor
   field: emg
+channel_downsampling:
+  _target_: emg2pose.transforms.ChannelDownsampling
+  downsampling: 4
 
 transforms:
   train:
     - ${to_tensor}
+    - ${channel_downsampling}
     - _target_: emg2pose.transforms.RotationAugmentation
   val:
     - ${to_tensor}
+    - ${channel_downsampling}
   test: ${transforms.val}

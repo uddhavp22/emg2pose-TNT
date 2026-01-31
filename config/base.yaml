@@ -6,7 +6,7 @@ defaults:
   - transforms: rotation_augmentation
   - experiment: tracking_vemg2pose
 
-data_location: ~/emg2pose_data
+data_location: ./emg2pose_dataset_mini
 
 seed: 42
 

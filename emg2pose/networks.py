@@ -248,7 +248,7 @@ class TDSConvEncoder(nn.Module):
 class TdsStage(nn.Module):
     def __init__(
         self,
-        in_channels: int = 16,
+        in_channels: int = 4,
         in_conv_kernel_width: int = 5,
         in_conv_stride: int = 1,
         num_blocks: int = 1,

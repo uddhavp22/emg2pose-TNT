@@ -31,8 +31,8 @@ class Emg2PoseSessionData:
     as in a numpy structured array containing three fields - EMG data from the
     left and right wrists, and their corresponding timestamps.
     The sampling rate of EMG is 2kHz, each EMG device has 16 electrode
-    channels, and the signal has been high-pass filtered. Therefore, the fields
-    corresponding to left and right EMG are 2D arrays of shape ``(T, 16)`` each
+    channels, and the signal has been high-pass filtered. After channel downsampling,
+    the fields corresponding to left and right EMG are 2D arrays of shape ``(T, 4)`` each
     and ``timestamps`` is a 1D array of length ``T``.
 
     NOTE: Only the metadata and ground-truth are loaded into memory while the
@@ -60,11 +60,13 @@ class Emg2PoseSessionData:
     hdf5_path: Path
 
     def __post_init__(self) -> None:
+        print(self.hdf5_path)
         self._file = h5py.File(self.hdf5_path, "r")
         emg2pose_group: h5py.Group = self._file[self.HDF5_GROUP]
 
         # ``timeseries`` is a HDF5 compound Dataset
         self.timeseries: h5py.Dataset = emg2pose_group[self.TIMESERIES]
+        print(f"REEEEEREEEEEREEEEEREEEEEREEEEEREEEEEREEEEEREEEEE {emg2pose_group.items()}")
         assert self.timeseries.dtype.fields is not None
         assert self.EMG in self.timeseries.dtype.fields
         assert self.JOINT_ANGLES in self.timeseries.dtype.fields

@@ -2,7 +2,7 @@ _target_: emg2pose.networks.TdsNetwork
 
 conv_blocks:
   - _target_: emg2pose.networks.Conv1dBlock
-    in_channels: 16
+    in_channels: 4
     out_channels: 256
     kernel_size: 11
     stride: 5
