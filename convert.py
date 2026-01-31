@@ -252,27 +252,98 @@ def score_blocks_feature_map(
 # I/O: 4-channel CSV
 # -----------------------------
 
-def load_4ch_csv(path: str, delimiter: str = ",", has_header: bool = True) -> np.ndarray:
+def load_4ch_csv(
+    path: str,
+    delimiter: str = ",",
+    has_header: bool = True,
+    column_names: Optional[List[str]] = None,
+) -> np.ndarray:
     """
-    Load a 4-channel CSV into numpy array of shape (T, 4).
-
-    If has_header=True, uses genfromtxt to skip header.
+    Load CSV file(s) into numpy array with selected columns.
+    
+    Args:
+        path: Path to either a single CSV file or a directory containing CSV files.
+        delimiter: CSV delimiter (default: ",").
+        has_header: Whether CSV files have a header row (default: True).
+        column_names: List of column names or indices to select.
+                     If None and has_header=True, uses column names from header.
+                     If None and has_header=False, selects first 4 columns by index.
+                     Can be a mix of column names (str) and indices (int).
+    
+    Returns:
+        Concatenated numpy array of shape (T, num_selected_cols) from all CSV files found.
+        If multiple files, they are concatenated along the time axis.
     """
-    if has_header:
-        data = np.genfromtxt(path, delimiter=delimiter, skip_header=1)
+    
+    data_list = []
+    
+    if os.path.isfile(path):
+        csv_files = [path]
+    elif os.path.isdir(path):
+        csv_files = [
+            os.path.join(path, f) for f in os.listdir(path) 
+            if f.endswith('.csv')
+        ]
+        if not csv_files:
+            raise ValueError(f"No CSV files found in directory: {path}")
+        csv_files.sort()  # Sort for consistent ordering
     else:
-        data = np.genfromtxt(path, delimiter=delimiter)
-
-    if data.ndim == 1:
-        # Single row -> reshape
-        data = data.reshape(1, -1)
-
-    if data.shape[1] < 4:
-        raise ValueError(f"CSV must have at least 4 columns, got {data.shape[1]}")
-
-    # Take first 4 columns by default; adjust here if your CSV has timestamps etc.
-    y4 = data[:, :4].astype(np.float32)
-    return y4
+        raise FileNotFoundError(f"Path does not exist: {path}")
+    
+    for csv_file in csv_files:
+        if has_header:
+            # Load with header to access column names
+            data = np.genfromtxt(csv_file, delimiter=delimiter, skip_header=1)
+            header_raw = np.genfromtxt(csv_file, delimiter=delimiter, max_rows=1, dtype=str)
+            # Flatten header in case it's a 0-d or 1-d array
+            header = np.atleast_1d(header_raw).flatten().tolist()
+        else:
+            data = np.genfromtxt(csv_file, delimiter=delimiter)
+            header = None
+        
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
+        
+        # Determine which columns to select
+        if column_names is None:
+            if has_header:
+                # If no columns specified but header exists, select all
+                col_indices = list(range(data.shape[1]))
+            else:
+                # If no header and no columns specified, default to first 4
+                if data.shape[1] < 4:
+                    raise ValueError(f"CSV must have at least 4 columns, got {data.shape[1]} in {csv_file}")
+                col_indices = [0, 1, 2, 3]
+        else:
+            # Convert column names/indices to indices
+            col_indices = []
+            for col in column_names:
+                if isinstance(col, int):
+                    col_indices.append(col)
+                elif isinstance(col, str):
+                    if header is None:
+                        raise ValueError(f"Cannot use column name '{col}' when has_header=False")
+                    try:
+                        idx = header.index(col)
+                        col_indices.append(idx)
+                    except ValueError:
+                        raise ValueError(f"Column '{col}' not found in {csv_file}. Available: {header}")
+                else:
+                    raise TypeError(f"Column must be str or int, got {type(col)}")
+        
+        # Validate column indices
+        for idx in col_indices:
+            if idx < 0 or idx >= data.shape[1]:
+                raise ValueError(f"Column index {idx} out of bounds for {data.shape[1]} columns in {csv_file}")
+        
+        # Select columns
+        y_selected = data[:, col_indices].astype(np.float32)
+        data_list.append(y_selected)
+    
+    if not data_list:
+        raise ValueError("No data loaded from CSV file(s)")
+    
+    return np.concatenate(data_list, axis=0)
 
 
 # -----------------------------
@@ -281,14 +352,15 @@ def load_4ch_csv(path: str, delimiter: str = ",", has_header: bool = True) -> np
 
 def your_16ch_generator_stub() -> Generator[np.ndarray, None, None]:
     TARGET = "/Users/zanderbaker/emg2pose_dataset_mini/"
-    f = h5py.File(f"/Users/zanderbaker/emg2pose_dataset_mini/{TARGET}", "r")
-
+    
     for file in os.listdir(TARGET):
         if not file.endswith(".hdf5"):
             continue
-        f = h5py.File(f"/Users/zanderbaker/emg2pose_dataset_mini/{TARGET}/{file}", "r")
+        filepath = os.path.join(TARGET, file)
+        f = h5py.File(filepath, "r")
         data = f.get("emg2pose")
         emg_np = data.get("timeseries")["emg"]
+        f.close()
         
         yield emg_np
 
@@ -299,9 +371,15 @@ def your_16ch_generator_stub() -> Generator[np.ndarray, None, None]:
 
 def main():
     p = argparse.ArgumentParser(description="Find best contiguous 4-channel block from 16-channel EMG data.")
-    p.add_argument("--csv4", required=True, help="Path to 4-channel CSV file.")
-    p.add_argument("--delimiter", default=",", help="CSV delimiter (default: ,).")
+    p.add_argument("--csv4", required=True, help="Path to 4-channel CSV file/directory.")
+    p.add_argument("--delimiter", default="\t", help="CSV delimiter (default: ,).")
     p.add_argument("--no-header", action="store_true", help="Set if CSV has no header row.")
+    p.add_argument(
+        "--columns",
+        type=str,
+        default=None,
+        help="Comma-separated list of column names or indices to select (default: 0,1,2,3 or all if header exists)."
+    )
     p.add_argument("--win", type=int, default=400, help="Window length in samples (default: 400).")
     p.add_argument("--step", type=int, default=200, help="Step size in samples (default: 200).")
     p.add_argument("--alpha", type=float, default=1.0, help="Ridge alpha (default: 1.0).")
@@ -309,7 +387,24 @@ def main():
     p.add_argument("--topk", type=int, default=8, help="How many top candidates to print (default: 8).")
     args = p.parse_args()
 
-    y4 = load_4ch_csv(args.csv4, delimiter=args.delimiter, has_header=not args.no_header)
+    # Parse column selection
+    column_names = None
+    if args.columns:
+        column_names = []
+        for col in args.columns.split(','):
+            col = col.strip()
+            # Try to parse as integer, otherwise treat as column name
+            try:
+                column_names.append(int(col))
+            except ValueError:
+                column_names.append(col)
+
+    y4 = load_4ch_csv(
+        args.csv4,
+        delimiter=args.delimiter,
+        has_header=not args.no_header,
+        column_names=column_names,
+    )
 
     # TODO: swap stub with your real generator
     gen16 = your_16ch_generator_stub()
