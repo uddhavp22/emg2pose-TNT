@@ -19,6 +19,7 @@ direct time-series correlation scoring (see score_time_aligned()).
 """
 
 from __future__ import annotations
+from http import client
 import os
 
 import h5py
@@ -29,6 +30,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Generator, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+from google.cloud import storage
 
 
 # -----------------------------
@@ -351,17 +353,26 @@ def load_4ch_csv(
 # -----------------------------
 
 def your_16ch_generator_stub() -> Generator[np.ndarray, None, None]:
-    TARGET = "/Users/zanderbaker/emg2pose_dataset_mini/"
-    
-    for file in os.listdir(TARGET):
-        if not file.endswith(".hdf5"):
+    client = storage.Client.create_anonymous_client()
+
+    # Use bucket reference without refresh to avoid anonymous credential refresh.
+    bucket_name = "emg2pose_data"
+    blobs = list(client.list_blobs(bucket_name, prefix="emg2pose_data/"))
+    i = 0
+
+    for blob in blobs:
+        if not blob.name.endswith(".hdf5"):
             continue
-        filepath = os.path.join(TARGET, file)
-        f = h5py.File(filepath, "r")
-        data = f.get("emg2pose")
-        emg_np = data.get("timeseries")["emg"]
-        f.close()
         
+        print(f"[{i}/{len(blobs)}] Processing blob: {blob.name}")
+
+        blob.download_to_filename("temp.hdf5")
+        with h5py.File("temp.hdf5", "r") as f:
+            data = f.get("emg2pose")
+            emg_np = data.get("timeseries")["emg"]
+        os.remove("temp.hdf5")
+        i += 1
+
         yield emg_np
 
 
