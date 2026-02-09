@@ -14,12 +14,14 @@ from typing import Any
 
 import hydra
 import pytorch_lightning as pl
+import wandb
 from emg2pose import transforms
 
 from emg2pose.lightning import Emg2PoseModule
 from emg2pose.transforms import Transform
 from hydra.utils import instantiate
 from omegaconf import DictConfig, ListConfig, OmegaConf
+from pytorch_lightning.loggers import WandbLogger
 
 
 log = logging.getLogger(__name__)
@@ -86,6 +88,27 @@ def train(
     # (see `pl_worker_init_fn()`).
     pl.seed_everything(config.seed, workers=True)
 
+    # Initialize WandB logger
+    wandb_config = config.get("wandb", {})
+    if wandb_config.get("enabled", True):
+        # Convert OmegaConf to regular dict for wandb
+        config_dict = OmegaConf.to_container(config, resolve=True)
+
+        wandb_logger = WandbLogger(
+            project=wandb_config.get("project", "emg2pose"),
+            entity=wandb_config.get("entity", "saarangp-ucla"),
+            name=wandb_config.get("name", None),
+            tags=wandb_config.get("tags", []),
+            notes=wandb_config.get("notes", None),
+            config=config_dict,
+            log_model=wandb_config.get("log_model", "all"),  # Log all checkpoints
+            save_dir=wandb_config.get("save_dir", None),
+        )
+        log.info(f"WandB logging enabled. Project: {wandb_config.get('project', 'emg2pose')}")
+    else:
+        wandb_logger = None
+        log.info("WandB logging disabled")
+
     if config.checkpoint is not None:
         log.info(f"Loading from checkpoint {config.checkpoint}")
         module = Emg2PoseModule.load_from_checkpoint(
@@ -101,6 +124,16 @@ def train(
     log.info(f"Instantiating LightningDataModule {config.datamodule}")
     datamodule = make_data_module(config)
 
+    # Watch model with wandb for gradient and parameter tracking
+    if wandb_logger is not None and wandb_config.get("watch_model", True):
+        wandb_logger.watch(
+            module,
+            log=wandb_config.get("watch_log", "all"),  # Log gradients and parameters
+            log_freq=wandb_config.get("watch_log_freq", 100),
+            log_graph=wandb_config.get("watch_log_graph", True),
+        )
+        log.info("WandB model watching enabled")
+
     # Instantiate callbacks
     callback_configs = config.get("callbacks", [])
     callbacks = [instantiate(cfg) for cfg in callback_configs]
@@ -111,6 +144,7 @@ def train(
     trainer = pl.Trainer(
         **config.trainer,
         callbacks=callbacks,
+        logger=wandb_logger if wandb_logger else True,  # Use wandb or default logger
     )
 
     results = {}
@@ -138,7 +172,22 @@ def train(
         results["val_metrics"] = val_metrics
         results["test_metrics"] = test_metrics
 
+        # Log final metrics to wandb as summary
+        if wandb_logger is not None:
+            for metrics_dict in val_metrics:
+                wandb_logger.experiment.summary.update(
+                    {f"final_{k}": v for k, v in metrics_dict.items()}
+                )
+            for metrics_dict in test_metrics:
+                wandb_logger.experiment.summary.update(
+                    {f"final_{k}": v for k, v in metrics_dict.items()}
+                )
+
     pprint.pprint(results, sort_dicts=False)
+
+    # Finish wandb run
+    if wandb_logger is not None:
+        wandb.finish()
 
 
 @hydra.main(config_path="../config", config_name="base", version_base="1.1")

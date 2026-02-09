@@ -191,6 +191,24 @@ class Emg2PoseModule(pl.LightningModule):
             lr_scheduler_config=self.hparams.lr_scheduler_conf,
         )
 
+    def on_train_epoch_end(self) -> None:
+        """Log additional metrics at the end of each training epoch."""
+        # Log current learning rate
+        opt = self.optimizers()
+        if opt is not None:
+            if isinstance(opt, list):
+                for idx, optimizer in enumerate(opt):
+                    lr = optimizer.param_groups[0]["lr"]
+                    self.log(f"lr_group_{idx}", lr, sync_dist=True)
+            else:
+                lr = opt.param_groups[0]["lr"]
+                self.log("learning_rate", lr, sync_dist=True)
+
+    def on_validation_epoch_end(self) -> None:
+        """Log additional metrics at the end of each validation epoch."""
+        # Current epoch number
+        self.log("epoch", float(self.current_epoch), sync_dist=True)
+
     def update_ik_failure_mask(self, no_ik_failure: torch.Tensor) -> torch.Tensor:
         """Update the mask to only include samples where there are no ik failures."""
 
