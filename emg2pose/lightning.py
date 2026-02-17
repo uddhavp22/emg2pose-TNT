@@ -106,6 +106,8 @@ class WindowedEmgDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             shuffle=True,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=2 if self.num_workers > 0 else None,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -115,6 +117,8 @@ class WindowedEmgDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             shuffle=False,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=2 if self.num_workers > 0 else None,
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -124,6 +128,8 @@ class WindowedEmgDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             shuffle=False,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=2 if self.num_workers > 0 else None,
         )
 
 
@@ -149,6 +155,7 @@ class LitDataEmgDataModule(pl.LightningDataModule):
         num_workers: int,
         cache_dir: str = "/cache/chunks",
         max_cache_size: int | None = None,
+        **kwargs,
     ) -> None:
         super().__init__()
 
@@ -171,7 +178,7 @@ class LitDataEmgDataModule(pl.LightningDataModule):
         self.train_dataset = LitDataEmgDataset(
             data_dir=train_dir,
             cache_dir=self.cache_dir,
-            transform=self.train_transforms,
+            emg_transform=self.train_transforms,
             shuffle=True,
             drop_last=True,
             max_cache_size=self.max_cache_size,
@@ -182,7 +189,7 @@ class LitDataEmgDataModule(pl.LightningDataModule):
         self.val_dataset = LitDataEmgDataset(
             data_dir=val_dir,
             cache_dir=self.cache_dir,
-            transform=self.val_transforms,
+            emg_transform=self.val_transforms,
             shuffle=False,
             drop_last=False,
             max_cache_size=self.max_cache_size,
@@ -193,7 +200,7 @@ class LitDataEmgDataModule(pl.LightningDataModule):
         self.test_dataset = LitDataEmgDataset(
             data_dir=test_dir,
             cache_dir=self.cache_dir,
-            transform=self.test_transforms,
+            emg_transform=self.test_transforms,
             shuffle=False,
             drop_last=False,
             max_cache_size=self.max_cache_size,
@@ -209,6 +216,8 @@ class LitDataEmgDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
             # Note: shuffle is handled by StreamingDataset
         )
 
@@ -218,6 +227,8 @@ class LitDataEmgDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -226,6 +237,8 @@ class LitDataEmgDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
         )
 
 

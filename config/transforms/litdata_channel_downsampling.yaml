@@ -1,0 +1,13 @@
+# @package _global_
+# Channel downsampling for litdata streaming datasets.
+# ExtractToTensor is NOT needed because litdata data is already extracted as numpy arrays.
+channel_downsampling:
+  _target_: emg2pose.transforms.ChannelDownsampling
+  downsampling: 4
+
+transforms:
+  train:
+    - ${channel_downsampling}
+  val:
+    - ${channel_downsampling}
+  test: ${transforms.val}

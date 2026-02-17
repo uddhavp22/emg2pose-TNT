@@ -30,32 +30,43 @@ log = logging.getLogger(__name__)
 def make_data_module(config: DictConfig):
     """Create datamodule from experiment config."""
 
-    # Dataset session paths
-    def _full_paths(root: str, dataset: ListConfig) -> list[Path]:
-        # sessions = [session["session"] for session in dataset]
-        sessions = dataset
-        return [
-            Path(root).expanduser().joinpath(f"{session}.hdf5") for session in sessions
-        ]
-
-    splits = instantiate(config.data_split)
-    train_sessions = _full_paths(config.data_location, splits["train"])
-    val_sessions = _full_paths(config.data_location, splits["val"])
-    test_sessions = _full_paths(config.data_location, splits["test"])
-
-    datamodule = instantiate(
-        config.datamodule,
-        batch_size=config.batch_size,
-        num_workers=config.num_workers,
-        train_sessions=train_sessions,
-        val_sessions=val_sessions,
-        test_sessions=test_sessions,
-        skip_ik_failures=config.datamodule.get("skip_ik_failures", False),
-    )
-
     # Instantiate transforms
     def _build_transform(configs: Sequence[DictConfig]) -> Transform[Any, Any]:
         return transforms.Compose([instantiate(cfg) for cfg in configs])
+
+    # Check if using litdata streaming datamodule
+    is_litdata = "LitDataEmgDataModule" in config.datamodule.get("_target_", "")
+
+    if is_litdata:
+        # LitData datamodule just needs the data location
+        datamodule = instantiate(
+            config.datamodule,
+            data_location=config.data_location,
+            batch_size=config.batch_size,
+            num_workers=config.num_workers,
+        )
+    else:
+        # Original HDF5-based datamodule needs session paths
+        def _full_paths(root: str, dataset: ListConfig) -> list[Path]:
+            sessions = dataset
+            return [
+                Path(root).expanduser().joinpath(f"{session}.hdf5") for session in sessions
+            ]
+
+        splits = instantiate(config.data_split)
+        train_sessions = _full_paths(config.data_location, splits["train"])
+        val_sessions = _full_paths(config.data_location, splits["val"])
+        test_sessions = _full_paths(config.data_location, splits["test"])
+
+        datamodule = instantiate(
+            config.datamodule,
+            batch_size=config.batch_size,
+            num_workers=config.num_workers,
+            train_sessions=train_sessions,
+            val_sessions=val_sessions,
+            test_sessions=test_sessions,
+            skip_ik_failures=config.datamodule.get("skip_ik_failures", False),
+        )
 
     datamodule.train_transforms = _build_transform(config.transforms.train)
     datamodule.val_transforms = _build_transform(config.transforms.val)

@@ -11,7 +11,7 @@ data_location: ~/emg2pose_data
 seed: 42
 
 batch_size: 64
-num_workers: 0  # Number of workers for dataloading
+num_workers: 4  # Number of workers for dataloading
 
 # Weights & Biases configuration
 wandb:
@@ -21,12 +21,12 @@ wandb:
   name: null  # Auto-generate run name if null
   tags: []  # Add tags like ["baseline", "lstm"] for organization
   notes: null  # Add experiment notes
-  log_model: all  # Log all checkpoints (options: all, best, last, or False)
+  log_model: best  # Log only best checkpoint (options: all, best, last, or False)
   save_dir: null  # Default to hydra output dir
-  watch_model: True  # Watch model for gradients and parameters
+  watch_model: False  # Watch model for gradients and parameters (expensive)
   watch_log: all  # What to log: gradients, parameters, all, or None
-  watch_log_freq: 100  # Log frequency for gradients/parameters
-  watch_log_graph: True  # Log model computational graph
+  watch_log_freq: 1000  # Log frequency for gradients/parameters
+  watch_log_graph: False  # Log model computational graph
 
 train: True  # Whether to run training
 eval: True  # Whether to run evaluation on validation and test splits
@@ -41,6 +41,7 @@ loss_weights:
 
 trainer:
   max_epochs: 500
+  precision: "bf16-mixed"
 
 # By default: static learning rate
 lr_scheduler:
