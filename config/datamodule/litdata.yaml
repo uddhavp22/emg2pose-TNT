@@ -1,0 +1,5 @@
+# @package _global_
+datamodule:
+  _target_: emg2pose.lightning.LitDataEmgDataModule
+  cache_dir: /cache/chunks  # Local cache directory for streaming chunks
+  max_cache_size: null  # null = unlimited, or specify bytes (e.g., 100GB = 107374182400)
