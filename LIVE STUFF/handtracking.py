@@ -37,6 +37,8 @@ options = HandLandmarkerOptions(
 
 # Webcam capture
 cap = cv2.VideoCapture(0)
+# if u want iphone camera:
+#cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION)
 
 with HandLandmarker.create_from_options(options) as landmarker:
     while True:
