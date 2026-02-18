@@ -42,8 +42,6 @@ def generate_windows_from_session(
 
     This follows the same logic as WindowedEmgDataset but yields individual windows.
     """
-    log.info(f"Processing {hdf5_path.name}")
-
     with h5py.File(hdf5_path, "r") as f:
         emg2pose_group = f["emg2pose"]
         timeseries = emg2pose_group["timeseries"]
@@ -69,8 +67,16 @@ def generate_windows_from_session(
         else:
             blocks = [(0, session_length)]
 
-        # Generate windows from each block
+        # Calculate total windows for progress bar
+        total_windows = sum(
+            (end_idx - start_idx - window_length) // stride + 1
+            for start_idx, end_idx in blocks
+        )
+
+        # Generate windows from each block with progress bar
         window_count = 0
+        pbar = tqdm(total=total_windows, desc=f"Processing {hdf5_path.name}", leave=False, unit="window")
+
         for start_idx, end_idx in blocks:
             block_length = end_idx - start_idx
             num_windows = (block_length - window_length) // stride + 1
@@ -105,7 +111,9 @@ def generate_windows_from_session(
                 }
 
                 window_count += 1
+                pbar.update(1)
 
+        pbar.close()
         log.info(f"  Generated {window_count} windows from {hdf5_path.name}")
 
 
@@ -115,21 +123,22 @@ def process_session_for_optimize(
     stride: int,
     skip_ik_failures: bool,
 ):
-    """Process a single session and return all windows.
+    """Process a single session and yield individual windows.
 
     This function is called by litdata.optimize() for each input session.
+    It yields each window as a separate item for litdata to serialize.
     """
     try:
-        windows = list(generate_windows_from_session(
+        for window in generate_windows_from_session(
             session_path,
             window_length=window_length,
             stride=stride,
             skip_ik_failures=skip_ik_failures,
-        ))
-        return windows
+        ):
+            yield window
     except Exception as e:
         log.error(f"Error processing {session_path}: {e}")
-        return []
+        # Don't yield anything on error
 
 
 def load_session_paths_from_split(
@@ -167,8 +176,12 @@ def load_session_paths_from_split(
     # Convert session names to file paths
     session_paths = [input_dir / f"{session}.hdf5" for session in sessions]
 
-    # Verify files exist
-    existing_paths = [p for p in session_paths if p.exists()]
+    # Verify files exist with progress bar
+    existing_paths = []
+    for p in tqdm(session_paths, desc=f"Verifying {split_name} files", leave=False, unit="file"):
+        if p.exists():
+            existing_paths.append(p)
+
     missing_count = len(session_paths) - len(existing_paths)
 
     if missing_count > 0:
@@ -313,8 +326,8 @@ def main():
     log.info(f"Splits: {', '.join(args.splits)}")
     log.info("=" * 80)
 
-    # Convert each split
-    for split_name in args.splits:
+    # Convert each split with progress bar
+    for split_name in tqdm(args.splits, desc="Overall Progress", unit="split"):
         try:
             convert_split(
                 input_dir=args.input_dir,

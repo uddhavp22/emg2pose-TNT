@@ -242,6 +242,116 @@ class LitDataEmgDataModule(pl.LightningDataModule):
         )
 
 
+class ShardedEmgDataModule(pl.LightningDataModule):
+    """DataModule for streaming EMG2Pose data from WebDataset tar shards on GCS.
+
+    Shards are large sequential tar files (500 MB – 2 GB) produced by
+    ``create_shards.py``. They are streamed directly from GCS via fsspec/gcsfs
+    with no per-sample random seeks.
+
+    Expected GCS layout::
+
+        {data_location}/{shard_subdir}/train/shard-000000.tar.gz
+        {data_location}/{shard_subdir}/val/shard-000000.tar.gz
+        {data_location}/{shard_subdir}/test/shard-000000.tar.gz
+
+    Args:
+        data_location (str): Root path to shards
+            (e.g. ``gs://emg2posedata`` or ``/local/shards``).
+        batch_size (int): Batch size for dataloaders.
+        num_workers (int): DataLoader worker count. Each worker streams an
+            independent subset of shards.
+        shuffle_buffer (int): In-memory ring-buffer size for within-shard
+            sample shuffle. Larger = better shuffle, more RAM. (default: 1000)
+        shard_subdir (str): Sub-directory appended to ``data_location`` before
+            the split name. (default: ``"shards"``)
+        shard_suffix (str): Filename suffix for shard files.
+            (default: ``".tar.gz"``)
+    """
+
+    def __init__(
+        self,
+        data_location: str,
+        batch_size: int,
+        num_workers: int,
+        shuffle_buffer: int = 1000,
+        shard_subdir: str = "shards",
+        shard_suffix: str = ".tar.gz",
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        self.data_location = data_location
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.shuffle_buffer = shuffle_buffer
+        self.shard_subdir = shard_subdir
+        self.shard_suffix = shard_suffix
+
+        self.train_transforms = None
+        self.val_transforms = None
+        self.test_transforms = None
+
+    def _shard_pattern(self, split: str) -> str:
+        base = self.data_location.rstrip("/")
+        sub = self.shard_subdir
+        suffix = self.shard_suffix
+        return f"{base}/{sub}/{split}/shard-*{suffix}"
+
+    def setup(self, stage: str | None = None) -> None:
+        from emg2pose.sharded_dataset import ShardedEmgDataset
+
+        self.train_dataset = ShardedEmgDataset(
+            shard_pattern=self._shard_pattern("train"),
+            shuffle_buffer=self.shuffle_buffer,
+            training=True,
+            emg_transform=self.train_transforms,
+        )
+        self.val_dataset = ShardedEmgDataset(
+            shard_pattern=self._shard_pattern("val"),
+            shuffle_buffer=0,
+            training=False,
+            emg_transform=self.val_transforms,
+        )
+        self.test_dataset = ShardedEmgDataset(
+            shard_pattern=self._shard_pattern("test"),
+            shuffle_buffer=0,
+            training=False,
+            emg_transform=self.test_transforms,
+        )
+        log.info(f"Shard patterns: train={self._shard_pattern('train')}")
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            # shuffle=False: IterableDataset handles ordering internally
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
+        )
+
+    def val_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
+        )
+
+    def test_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
+        )
+
+
 class Emg2PoseModule(pl.LightningModule):
     def __init__(
         self,

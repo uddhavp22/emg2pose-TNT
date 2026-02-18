@@ -1,0 +1,11 @@
+# @package _global_
+datamodule:
+  _target_: emg2pose.lightning.ShardedEmgDataModule
+  # In-memory ring-buffer size for within-shard sample shuffle.
+  # Larger = better shuffle quality at the cost of more RAM.
+  shuffle_buffer: 1000
+  # Sub-directory between data_location and the split name.
+  # data_location/shard_subdir/{train,val,test}/shard-*.tar.gz
+  shard_subdir: shards
+  # Shard filename suffix — must match what create_shards.py produced.
+  shard_suffix: ".tar.gz"

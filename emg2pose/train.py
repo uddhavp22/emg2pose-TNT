@@ -34,10 +34,13 @@ def make_data_module(config: DictConfig):
     def _build_transform(configs: Sequence[DictConfig]) -> Transform[Any, Any]:
         return transforms.Compose([instantiate(cfg) for cfg in configs])
 
-    # Check if using litdata streaming datamodule
-    is_litdata = "LitDataEmgDataModule" in config.datamodule.get("_target_", "")
+    # Check if using a streaming datamodule (litdata or sharded WebDataset).
+    # Streaming datamodules manage their own data locations and don't need
+    # per-session path resolution from the split config.
+    _target = config.datamodule.get("_target_", "")
+    is_streaming = "LitDataEmgDataModule" in _target or "ShardedEmgDataModule" in _target
 
-    if is_litdata:
+    if is_streaming:
         # LitData datamodule just needs the data location
         datamodule = instantiate(
             config.datamodule,
