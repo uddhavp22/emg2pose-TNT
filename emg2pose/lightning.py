@@ -243,30 +243,21 @@ class LitDataEmgDataModule(pl.LightningDataModule):
 
 
 class ShardedEmgDataModule(pl.LightningDataModule):
-    """DataModule for streaming EMG2Pose data from WebDataset tar shards on GCS.
+    """DataModule for loading pre-sharded EMG2Pose data from .tar.gz shard files.
 
-    Shards are large sequential tar files (500 MB – 2 GB) produced by
-    ``create_shards.py``. They are streamed directly from GCS via fsspec/gcsfs
-    with no per-sample random seeks.
+    Expects shards organised as:
+        {data_location}/shards/train/shard-*.tar.gz
+        {data_location}/shards/val/shard-*.tar.gz
+        {data_location}/shards/test/shard-*.tar.gz
 
-    Expected GCS layout::
-
-        {data_location}/{shard_subdir}/train/shard-000000.tar.gz
-        {data_location}/{shard_subdir}/val/shard-000000.tar.gz
-        {data_location}/{shard_subdir}/test/shard-000000.tar.gz
+    ``data_location`` may be a local path or a ``gs://`` URI; in the latter
+    case the module resolves the path to the locally-mounted GCS connection
+    under ``/teamspace/gcs_connections/``.
 
     Args:
-        data_location (str): Root path to shards
-            (e.g. ``gs://emg2posedata`` or ``/local/shards``).
-        batch_size (int): Batch size for dataloaders.
-        num_workers (int): DataLoader worker count. Each worker streams an
-            independent subset of shards.
-        shuffle_buffer (int): In-memory ring-buffer size for within-shard
-            sample shuffle. Larger = better shuffle, more RAM. (default: 1000)
-        shard_subdir (str): Sub-directory appended to ``data_location`` before
-            the split name. (default: ``"shards"``)
-        shard_suffix (str): Filename suffix for shard files.
-            (default: ``".tar.gz"``)
+        data_location: Root path containing the ``shards/`` directory.
+        batch_size: Batch size for dataloaders.
+        num_workers: Number of DataLoader workers.
     """
 
     def __init__(
@@ -274,82 +265,95 @@ class ShardedEmgDataModule(pl.LightningDataModule):
         data_location: str,
         batch_size: int,
         num_workers: int,
-        shuffle_buffer: int = 1000,
-        shard_subdir: str = "shards",
-        shard_suffix: str = ".tar.gz",
+        cache_dir: str | None = None,
+        prefetch_shards: int = 4,
         **kwargs,
     ) -> None:
         super().__init__()
-        self.data_location = data_location
+
+        from emg2pose.sharded_dataset import _find_gcs_local_mount
+
+        self.data_location = _find_gcs_local_mount(data_location)
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.shuffle_buffer = shuffle_buffer
-        self.shard_subdir = shard_subdir
-        self.shard_suffix = shard_suffix
+        self.cache_dir = cache_dir
+        self.prefetch_shards = prefetch_shards
 
         self.train_transforms = None
         self.val_transforms = None
         self.test_transforms = None
 
-    def _shard_pattern(self, split: str) -> str:
-        base = self.data_location.rstrip("/")
-        sub = self.shard_subdir
-        suffix = self.shard_suffix
-        return f"{base}/{sub}/{split}/shard-*{suffix}"
+    @staticmethod
+    def _strip_extract_to_tensor(transform):
+        """Remove ExtractToTensor from a Compose chain.
+
+        Sharded data is already loaded as tensors, so ExtractToTensor (which
+        expects HDF5-style structured numpy arrays) must not be applied.
+        """
+        from emg2pose.transforms import Compose, ExtractToTensor
+
+        if transform is None:
+            return None
+        if isinstance(transform, ExtractToTensor):
+            log.warning(
+                "ShardedEmgDataModule: dropping ExtractToTensor from the transform "
+                "chain — sharded data is already extracted as tensors."
+            )
+            return None
+        if isinstance(transform, Compose):
+            filtered = [t for t in transform.transforms if not isinstance(t, ExtractToTensor)]
+            if len(filtered) < len(transform.transforms):
+                log.warning(
+                    "ShardedEmgDataModule: dropped ExtractToTensor from the transform "
+                    "chain — sharded data is already extracted as tensors."
+                )
+            return Compose(filtered) if filtered else None
+        return transform
 
     def setup(self, stage: str | None = None) -> None:
         from emg2pose.sharded_dataset import ShardedEmgDataset
 
-        self.train_dataset = ShardedEmgDataset(
-            shard_pattern=self._shard_pattern("train"),
-            shuffle_buffer=self.shuffle_buffer,
-            training=True,
-            emg_transform=self.train_transforms,
+        shard_root = Path(self.data_location) / "shards"
+
+        def _make_ds(split, transform, shuffle):
+            cache = Path(self.cache_dir) / split if self.cache_dir else None
+            if cache:
+                cache.mkdir(parents=True, exist_ok=True)
+            return ShardedEmgDataset(
+                shard_dir=shard_root / split,
+                emg_transform=self._strip_extract_to_tensor(transform),
+                shuffle=shuffle,
+                prefetch_shards=self.prefetch_shards,
+                cache_dir=cache,
+            )
+
+        self.train_dataset = _make_ds("train", self.train_transforms, shuffle=True)
+        self.val_dataset   = _make_ds("val",   self.val_transforms,   shuffle=False)
+        self.test_dataset  = _make_ds("test",  self.test_transforms,  shuffle=False)
+
+        log.info(f"Shard root: {shard_root}")
+        log.info(f"Train shards: {len(self.train_dataset.shard_files)}")
+        log.info(f"Val   shards: {len(self.val_dataset.shard_files)}")
+        log.info(f"Test  shards: {len(self.test_dataset.shard_files)}")
+
+    def _make_loader(self, dataset, shuffle: bool = False) -> DataLoader:
+        return DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
+            prefetch_factor=4 if self.num_workers > 0 else None,
         )
-        self.val_dataset = ShardedEmgDataset(
-            shard_pattern=self._shard_pattern("val"),
-            shuffle_buffer=0,
-            training=False,
-            emg_transform=self.val_transforms,
-        )
-        self.test_dataset = ShardedEmgDataset(
-            shard_pattern=self._shard_pattern("test"),
-            shuffle_buffer=0,
-            training=False,
-            emg_transform=self.test_transforms,
-        )
-        log.info(f"Shard patterns: train={self._shard_pattern('train')}")
 
     def train_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            # shuffle=False: IterableDataset handles ordering internally
-            persistent_workers=self.num_workers > 0,
-            prefetch_factor=4 if self.num_workers > 0 else None,
-        )
+        return self._make_loader(self.train_dataset)
 
     def val_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            persistent_workers=self.num_workers > 0,
-            prefetch_factor=4 if self.num_workers > 0 else None,
-        )
+        return self._make_loader(self.val_dataset)
 
     def test_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.test_dataset,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            persistent_workers=self.num_workers > 0,
-            prefetch_factor=4 if self.num_workers > 0 else None,
-        )
+        return self._make_loader(self.test_dataset)
 
 
 class Emg2PoseModule(pl.LightningModule):

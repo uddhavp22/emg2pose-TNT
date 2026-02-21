@@ -1,11 +1,9 @@
 # @package _global_
 datamodule:
   _target_: emg2pose.lightning.ShardedEmgDataModule
-  # In-memory ring-buffer size for within-shard sample shuffle.
-  # Larger = better shuffle quality at the cost of more RAM.
-  shuffle_buffer: 1000
-  # Sub-directory between data_location and the split name.
-  # data_location/shard_subdir/{train,val,test}/shard-*.tar.gz
-  shard_subdir: shards
-  # Shard filename suffix — must match what create_shards.py produced.
-  shard_suffix: ".tar.gz"
+  # Local SSD cache: ~10x faster than GCS FUSE reads.
+  # Shards are downloaded on first access and served from disk on all later epochs.
+  # Set to null to disable caching (slower but uses no extra disk space).
+  cache_dir: /teamspace/studios/this_studio/.shard_cache
+  # Shards prefetched per DataLoader worker in background threads.
+  prefetch_shards: 4

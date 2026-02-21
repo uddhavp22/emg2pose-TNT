@@ -1,0 +1,8 @@
+# @package _global_
+# Transforms for sharded (.tar.gz) datasets.
+# Data is already extracted as tensors, so ExtractToTensor is NOT included.
+transforms:
+  train:
+    - _target_: emg2pose.transforms.RotationAugmentation
+  val: []
+  test: ${transforms.val}

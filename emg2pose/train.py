@@ -14,6 +14,7 @@ from typing import Any
 
 import hydra
 import pytorch_lightning as pl
+import torch
 import wandb
 from emg2pose import transforms
 
@@ -34,13 +35,13 @@ def make_data_module(config: DictConfig):
     def _build_transform(configs: Sequence[DictConfig]) -> Transform[Any, Any]:
         return transforms.Compose([instantiate(cfg) for cfg in configs])
 
-    # Check if using a streaming datamodule (litdata or sharded WebDataset).
-    # Streaming datamodules manage their own data locations and don't need
-    # per-session path resolution from the split config.
-    _target = config.datamodule.get("_target_", "")
-    is_streaming = "LitDataEmgDataModule" in _target or "ShardedEmgDataModule" in _target
+    # Check if using a streaming datamodule (litdata or sharded)
+    _streaming_targets = ("LitDataEmgDataModule", "ShardedEmgDataModule")
+    is_litdata = any(
+        t in config.datamodule.get("_target_", "") for t in _streaming_targets
+    )
 
-    if is_streaming:
+    if is_litdata:
         # LitData datamodule just needs the data location
         datamodule = instantiate(
             config.datamodule,
@@ -94,6 +95,9 @@ def train(
     extra_callbacks: Sequence[Callable] | None = None,
 ):
     log.info(f"\nConfig:\n{OmegaConf.to_yaml(config)}")
+
+    # Use TF32 on Ampere+ GPUs for free throughput on matrix ops.
+    torch.set_float32_matmul_precision("medium")
 
     # Seed for determinism. This seeds torch, numpy and python random modules
     # taking global rank into account (for multi-process distributed setting).
