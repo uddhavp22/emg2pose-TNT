@@ -163,47 +163,58 @@ def _upload_batch_to_gcs(local_paths: list[Path], gcs_dest_dir: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Per-session worker (runs in subprocess)
+# Per-group worker (runs in subprocess)
 # ---------------------------------------------------------------------------
 
-def _process_session(
-    hdf5_path_str: str,
+def _process_session_group(
+    hdf5_path_strs: list[str],
     window_length: int,
     stride: int,
     skip_ik_failures: bool,
     shard_size_bytes: int,
     compress: str,
     tmp_dir: str,
-    worker_id: int,
+    group_id: int,
 ) -> tuple[list[str], int]:
-    """Process one HDF5 session and produce local shard files.
+    """Process a group of HDF5 sessions, accumulating windows across session
+    boundaries and flushing to a shard only when the size threshold is reached.
+
+    Grouping sessions together is critical when individual sessions are short
+    (e.g. ~10 windows each): without grouping every session becomes its own
+    tiny shard, producing tens-of-thousands of files and killing streaming
+    throughput. By packing many sessions into one shard we hit the 256 MB–1 GB
+    target and keep WebDataset opening only a few hundred tar files per epoch.
 
     Returns (list of local shard paths, total windows processed).
-    The main process re-indexes and uploads the shard paths.
     """
-    hdf5_path = Path(hdf5_path_str)
-    shard_paths = []
+    ext = f".tar.{compress}" if compress else ".tar"
+    shard_paths: list[str] = []
     buffer: list[dict] = []
     buffer_bytes = 0
     local_shard_idx = 0
     windows_processed = 0
 
-    for window in _iter_windows(hdf5_path, window_length, stride, skip_ik_failures):
-        buffer.append(window)
-        buffer_bytes += _estimate_bytes(window)
-        windows_processed += 1
-        if buffer_bytes >= shard_size_bytes:
-            ext = f".tar.{compress}" if compress else ".tar"
-            local_path = Path(tmp_dir) / f"worker{worker_id:04d}_shard{local_shard_idx:06d}{ext}"
-            _write_tar_shard(buffer, local_path, compress)
-            shard_paths.append(str(local_path))
-            buffer = []
-            buffer_bytes = 0
-            local_shard_idx += 1
+    for hdf5_path_str in hdf5_path_strs:
+        hdf5_path = Path(hdf5_path_str)
+        try:
+            for window in _iter_windows(hdf5_path, window_length, stride, skip_ik_failures):
+                buffer.append(window)
+                buffer_bytes += _estimate_bytes(window)
+                windows_processed += 1
+                if buffer_bytes >= shard_size_bytes:
+                    local_path = Path(tmp_dir) / f"group{group_id:06d}_shard{local_shard_idx:06d}{ext}"
+                    _write_tar_shard(buffer, local_path, compress)
+                    shard_paths.append(str(local_path))
+                    buffer = []
+                    buffer_bytes = 0
+                    local_shard_idx += 1
+        except Exception as e:
+            import logging as _log
+            _log.getLogger(__name__).warning(f"Skipping {hdf5_path.name}: {e}")
 
+    # Flush remaining windows as a partial shard (last shard in this group)
     if buffer:
-        ext = f".tar.{compress}" if compress else ".tar"
-        local_path = Path(tmp_dir) / f"worker{worker_id:04d}_shard{local_shard_idx:06d}{ext}"
+        local_path = Path(tmp_dir) / f"group{group_id:06d}_shard{local_shard_idx:06d}{ext}"
         _write_tar_shard(buffer, local_path, compress)
         shard_paths.append(str(local_path))
 
@@ -252,6 +263,7 @@ def convert_split(
     stride: int,
     skip_ik_failures: bool,
     shard_size_mb: int,
+    sessions_per_shard: int,
     compress: str,
     num_workers: int,
 ) -> None:
@@ -261,26 +273,36 @@ def convert_split(
         log.warning(f"No sessions for {split_name}, skipping.")
         return
 
+    # Chunk sessions into groups — each group becomes one worker job that
+    # accumulates windows across all its sessions before flushing shards.
+    groups = [
+        session_paths[i : i + sessions_per_shard]
+        for i in range(0, len(session_paths), sessions_per_shard)
+    ]
+    log.info(
+        f"  {len(session_paths)} sessions → {len(groups)} groups "
+        f"({sessions_per_shard} sessions/group, target {shard_size_mb} MB/shard)"
+    )
+
     shard_size_bytes = shard_size_mb * 1024 * 1024
     is_gcs = output_dir.startswith("gs://")
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        # Dispatch sessions to workers
         futures = {}
         with ProcessPoolExecutor(max_workers=num_workers) as pool:
-            for wid, sp in enumerate(session_paths):
+            for gid, group in enumerate(groups):
                 fut = pool.submit(
-                    _process_session,
-                    str(sp),
+                    _process_session_group,
+                    [str(sp) for sp in group],
                     window_length,
                     stride,
                     skip_ik_failures,
                     shard_size_bytes,
                     compress,
                     tmp_dir,
-                    wid,
+                    gid,
                 )
-                futures[fut] = wid
+                futures[fut] = gid
 
             all_local_shards: list[str] = []
             total_windows = 0
@@ -377,6 +399,18 @@ def main() -> None:
         help="Tar compression: gz (.tar.gz), bz2 (.tar.bz2), none (.tar). "
              "webdataset reads all formats natively. (default: gz)",
     )
+    parser.add_argument(
+        "--sessions_per_shard",
+        type=int,
+        default=100,
+        help=(
+            "Number of sessions to pack into each shard before flushing. "
+            "With ~10 windows/session and 1.45 MB/window uncompressed, "
+            "100 sessions ≈ 700 MB compressed per shard. "
+            "Increase for larger shards (better streaming), decrease if RAM is tight. "
+            "(default: 100)"
+        ),
+    )
     parser.add_argument("--num_workers", type=int, default=4)
     args = parser.parse_args()
 
@@ -391,6 +425,7 @@ def main() -> None:
     log.info(f"Window:      {args.window_length} samples")
     log.info(f"Stride:      {args.stride} samples")
     log.info(f"Shard size:  {args.shard_size_mb} MB")
+    log.info(f"Sessions/shard: {args.sessions_per_shard}")
     log.info(f"Compression: {args.compression}")
     log.info(f"Workers:     {args.num_workers}")
     log.info("=" * 70)
@@ -405,6 +440,7 @@ def main() -> None:
             stride=args.stride,
             skip_ik_failures=args.skip_ik_failures,
             shard_size_mb=args.shard_size_mb,
+            sessions_per_shard=args.sessions_per_shard,
             compress=compress,
             num_workers=args.num_workers,
         )
