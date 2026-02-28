@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -51,7 +51,6 @@ TransformsPreset = Literal[
     "sharded_rotation_augmentation",  # rotation aug for sharded datamodule
 ]
 
-
 # ── Config Model ───────────────────────────────────────────────────────────────
 
 class ExperimentConfig(BaseModel):
@@ -62,6 +61,39 @@ class ExperimentConfig(BaseModel):
 
     # ── Algorithm ──────────────────────────────────────────────────────────────
     experiment: ExperimentPreset = "tracking_vemg2pose"
+
+    # ── Custom network (bypasses YAML) ─────────────────────────────────────────
+    # Leave both as None to use the experiment preset's default network.
+    #
+    # network_params: dict that fully describes the encoder. Must include
+    #   "_target_" pointing to your class (e.g. "emg2pose.custom_networks.MyNet").
+    #   All other keys are passed as __init__ kwargs.
+    #   Write your class in emg2pose/custom_networks.py.
+    #
+    # decoder_params: same format for the decoder head. Only needed when your
+    #   network's feature_dim differs from the default 64, because the default
+    #   decoder YAML has in_channels=84 (64 features + 20 joint state) hardcoded.
+    #   New in_channels = your feature_dim + 20.
+    #
+    # Example — swap in a Transformer encoder with feature_dim=128:
+    #
+    #   network_params={
+    #       "_target_": "emg2pose.custom_networks.TransformerEMGEncoder",
+    #       "in_channels": 16,
+    #       "feature_dim": 128,
+    #       "num_layers": 4,
+    #       "num_heads": 4,
+    #   },
+    #   decoder_params={
+    #       "_target_": "emg2pose.networks.SequentialLSTM",
+    #       "in_channels": 148,   # 128 + 20
+    #       "out_channels": 20,
+    #       "hidden_size": 512,
+    #       "num_layers": 2,
+    #       "scale": 0.01,
+    #   },
+    network_params: Optional[dict[str, Any]] = None
+    decoder_params: Optional[dict[str, Any]] = None
 
     # ── Data ───────────────────────────────────────────────────────────────────
     datamodule: DatamodulePreset = "sharded"
@@ -143,20 +175,45 @@ class ExperimentConfig(BaseModel):
         """Build a Hydra config and call train() directly (no subprocess)."""
         from hydra import compose, initialize_config_dir
         from hydra.core.global_hydra import GlobalHydra
+        from omegaconf import OmegaConf, open_dict
         from emg2pose.train import train
 
         GlobalHydra.instance().clear()
         config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
         overrides = self.to_hydra_overrides()
 
-        print(f"\n=== Running experiment: {self.wandb_name or self.experiment} ===")
+        label = self.wandb_name or self.experiment
+        print(f"\n=== Running experiment: {label} ===")
         print("Hydra overrides:")
         for o in overrides:
             print(f"  {o}")
-        print()
 
         with initialize_config_dir(config_dir=config_dir, version_base="1.1"):
             cfg = compose(config_name="base", overrides=overrides)
+
+            # Patch network and/or decoder with inline Python dicts.
+            # This replaces whatever the experiment YAML loaded from config/network/.
+            if self.network_params is not None:
+                if "_target_" not in self.network_params:
+                    raise ValueError(
+                        "network_params must include '_target_' — "
+                        "e.g. 'emg2pose.custom_networks.TransformerEMGEncoder'"
+                    )
+                print(f"\n  [custom network] {self.network_params['_target_']}")
+                with open_dict(cfg):
+                    cfg.network = OmegaConf.create(self.network_params)
+
+            if self.decoder_params is not None:
+                if "_target_" not in self.decoder_params:
+                    raise ValueError(
+                        "decoder_params must include '_target_' — "
+                        "e.g. 'emg2pose.networks.SequentialLSTM'"
+                    )
+                print(f"  [custom decoder] {self.decoder_params['_target_']}")
+                with open_dict(cfg):
+                    cfg.pose_module.decoder = OmegaConf.create(self.decoder_params)
+
+            print()
             train(cfg)
 
 
@@ -212,6 +269,53 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         max_epochs=3,
         early_stopping_patience=999,
         wandb_enabled=False,
+    ),
+
+    # ── Custom architecture examples ───────────────────────────────────────────
+    # These show how to use network_params / decoder_params to define your own
+    # architectures without touching any YAML files.
+
+    # Transformer encoder — debug run (mini split, no wandb)
+    "transformer_debug": ExperimentConfig(
+        experiment="tracking_vemg2pose",
+        data_split="mini_split",
+        max_epochs=3,
+        early_stopping_patience=999,
+        wandb_enabled=False,
+        network_params={
+            "_target_": "emg2pose.custom_networks.TransformerEMGEncoder",
+            "in_channels": 16,
+            "feature_dim": 64,   # matches default decoder (no decoder_params needed)
+            "num_layers": 2,
+            "num_heads": 4,
+            "dropout": 0.1,
+        },
+        # feature_dim=64 → in_channels for decoder = 64+20 = 84, which is the
+        # YAML default, so no decoder_params needed here.
+    ),
+
+    # Transformer encoder — full training run
+    "transformer_tracking": ExperimentConfig(
+        experiment="tracking_vemg2pose",
+        lr=5e-4,
+        wandb_name="transformer-tracking",
+        wandb_tags=["custom", "transformer", "lstm-decoder"],
+        network_params={
+            "_target_": "emg2pose.custom_networks.TransformerEMGEncoder",
+            "in_channels": 16,
+            "feature_dim": 128,     # larger → must set decoder_params
+            "num_layers": 4,
+            "num_heads": 8,
+            "dropout": 0.1,
+        },
+        decoder_params={
+            "_target_": "emg2pose.networks.SequentialLSTM",
+            "in_channels": 148,     # 128 features + 20 joint state
+            "out_channels": 20,
+            "hidden_size": 512,
+            "num_layers": 2,
+            "scale": 0.01,
+        },
     ),
 
     # ── Your custom experiments ────────────────────────────────────────────────
@@ -293,6 +397,10 @@ Examples:
         print("\nHydra overrides:")
         for o in cfg.to_hydra_overrides():
             print(f"  {o}")
+        if cfg.network_params:
+            print(f"\n  [post-compose] cfg.network  ← {cfg.network_params}")
+        if cfg.decoder_params:
+            print(f"  [post-compose] cfg.pose_module.decoder ← {cfg.decoder_params}")
         sys.exit(0)
 
     cfg.run()
