@@ -1,0 +1,26 @@
+network_conf:
+  _target_: emg2pose.pose_modules.StatePoseModule
+  predict_vel: true
+  state_condition: true
+  network:
+    _target_: emg2pose.custom_networks.TransformerEMGEncoder
+    in_channels: 16
+    feature_dim: 64
+    num_layers: 2
+    num_heads: 4
+    dropout: 0.1
+  decoder:
+    _target_: emg2pose.networks.SequentialLSTM
+    in_channels: 84
+    out_channels: 20
+    hidden_size: 512
+    num_layers: 2
+    scale: 0.01
+optimizer_conf:
+  _target_: torch.optim.Adam
+  lr: 0.001
+lr_scheduler_conf: null
+provide_initial_pos: true
+loss_weights:
+  mae: 1.0
+  fingertip_distance: 0.01

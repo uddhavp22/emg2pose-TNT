@@ -1,0 +1,18 @@
+# @package _global_
+# Channel downsampling for sharded (.tar.gz) datasets.
+# Data is already extracted as tensors, so ExtractToTensor is NOT included.
+# Override channel_downsampling_factor on the CLI or in experiments.py to control
+# how aggressively channels are subsampled.  With 16 EMG channels:
+#   factor 1 → 16 ch  |  factor 2 → 8 ch  |  factor 4 → 4 ch
+channel_downsampling_factor: 2
+
+channel_downsampling:
+  _target_: emg2pose.transforms.ChannelDownsampling
+  downsampling: ${channel_downsampling_factor}
+
+transforms:
+  train:
+    - ${channel_downsampling}
+  val:
+    - ${channel_downsampling}
+  test: ${transforms.val}

@@ -34,6 +34,7 @@ checkpoint: null  # Optional path to checkpoint file
 
 monitor_metric: val_loss
 monitor_mode: min
+early_stopping_patience: 50
 
 loss_weights:
   mae: 1
@@ -57,7 +58,7 @@ callbacks:
   - _target_: pytorch_lightning.callbacks.EarlyStopping
     monitor: ${monitor_metric}
     mode: ${monitor_mode}
-    patience: 50
+    patience: ${early_stopping_patience}
     check_on_train_epoch_end: False
     verbose: True
 

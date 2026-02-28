@@ -27,6 +27,11 @@ from pytorch_lightning.loggers import WandbLogger
 
 log = logging.getLogger(__name__)
 
+# PyTorch 2.6 changed torch.load to weights_only=True by default.
+# Lightning checkpoints serialise OmegaConf containers via save_hyperparameters(),
+# so we must allowlist them explicitly.
+torch.serialization.add_safe_globals([DictConfig, ListConfig])
+
 
 def make_data_module(config: DictConfig):
     """Create datamodule from experiment config."""
@@ -35,14 +40,10 @@ def make_data_module(config: DictConfig):
     def _build_transform(configs: Sequence[DictConfig]) -> Transform[Any, Any]:
         return transforms.Compose([instantiate(cfg) for cfg in configs])
 
-    # Check if using a streaming datamodule (litdata or sharded)
-    _streaming_targets = ("LitDataEmgDataModule", "ShardedEmgDataModule")
-    is_litdata = any(
-        t in config.datamodule.get("_target_", "") for t in _streaming_targets
-    )
+    # Check if using the sharded streaming datamodule
+    is_sharded = "ShardedEmgDataModule" in config.datamodule.get("_target_", "")
 
-    if is_litdata:
-        # LitData datamodule just needs the data location
+    if is_sharded:
         datamodule = instantiate(
             config.datamodule,
             data_location=config.data_location,

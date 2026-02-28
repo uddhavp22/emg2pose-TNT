@@ -1,21 +1,29 @@
 """
 Centralized experiment registry for emg2pose.
 
-Define your experiments here as typed Python objects, then run them with:
+Built-in experiments live in this file.
+Extra experiment groups live in experiment_configs/<name>.py — drop a new file
+there and it will be auto-discovered and merged into EXPERIMENTS automatically.
 
+Run experiments:
     python experiments.py <name>
     python experiments.py --list
     python experiments.py <name> --dry-run
 
-Or import and run programmatically:
+Or run a single config file directly:
+    python experiment_configs/transformer.py --list
+    python experiment_configs/transformer.py transformer_debug
 
+Or import and run programmatically:
     from experiments import EXPERIMENTS
     EXPERIMENTS["my_run"].run()
 """
 
 from __future__ import annotations
 
+import importlib
 import os
+import pkgutil
 import sys
 from typing import Any, Literal, Optional
 
@@ -34,7 +42,6 @@ ExperimentPreset = Literal[
 
 DatamodulePreset = Literal[
     "default",   # HDF5-based, reads .hdf5 files from data_location
-    "litdata",   # Streaming via LitData
     "sharded",   # Streaming via pre-sharded files (fastest for large datasets)
 ]
 
@@ -44,11 +51,14 @@ DataSplitPreset = Literal[
 ]
 
 TransformsPreset = Literal[
-    "basic",                          # Just EMG → tensor
-    "rotation_augmentation",          # + random wrist rotation aug (train only)
-    "channel_downsampling",           # + 2x channel downsampling
-    "litdata_channel_downsampling",   # channel downsampling for litdata
-    "sharded_rotation_augmentation",  # rotation aug for sharded datamodule
+    # ── HDF5 (default datamodule) ───────────────────────────────────────────────
+    "basic",                          # ExtractToTensor only
+    "rotation_augmentation",          # ExtractToTensor + random wrist rotation aug (train only)
+    "channel_downsampling",           # ExtractToTensor + 2x channel downsampling
+    # ── Sharded datamodule (data already extracted as tensors) ──────────────────
+    "sharded_basic",                  # No transforms
+    "sharded_rotation_augmentation",  # Random wrist rotation aug (train only)
+    "sharded_channel_downsampling",   # 2x channel downsampling
 ]
 
 # ── Config Model ───────────────────────────────────────────────────────────────
@@ -98,12 +108,15 @@ class ExperimentConfig(BaseModel):
     # ── Data ───────────────────────────────────────────────────────────────────
     datamodule: DatamodulePreset = "sharded"
     data_split: DataSplitPreset = "full_split"
-    transforms: TransformsPreset = "basic"
-    data_location: str = "~/emg2pose_data"
+    transforms: TransformsPreset = "sharded_rotation_augmentation"
+    data_location: str = "gs://emg2pose_data/"
+    # Only used when transforms is *_channel_downsampling.
+    # Subsamples every Nth channel: factor 1 → 16 ch, 2 → 8 ch, 4 → 4 ch.
+    channel_downsampling_factor: Optional[int] = None
 
     # ── Training ───────────────────────────────────────────────────────────────
     batch_size: int = 64
-    num_workers: int = 4
+    num_workers: int = 8
     seed: int = 42
     max_epochs: int = 500
     # Set to override the experiment preset's lr
@@ -145,7 +158,7 @@ class ExperimentConfig(BaseModel):
             f"num_workers={self.num_workers}",
             f"seed={self.seed}",
             f"trainer.max_epochs={self.max_epochs}",
-            f"callbacks[2].patience={self.early_stopping_patience}",
+            f"early_stopping_patience={self.early_stopping_patience}",
             f"loss_weights.mae={self.mae_weight}",
             f"loss_weights.fingertip_distance={self.fingertip_distance_weight}",
             f"train={str(self.train).lower()}",
@@ -155,6 +168,8 @@ class ExperimentConfig(BaseModel):
             f"wandb.log_model={self.wandb_log_model}",
         ]
 
+        if self.channel_downsampling_factor is not None:
+            ov.append(f"channel_downsampling_factor={self.channel_downsampling_factor}")
         if self.lr is not None:
             ov.append(f"optimizer.lr={self.lr}")
         if self.gradient_clip_val is not None:
@@ -271,59 +286,13 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         wandb_enabled=False,
     ),
 
-    # ── Custom architecture examples ───────────────────────────────────────────
-    # These show how to use network_params / decoder_params to define your own
-    # architectures without touching any YAML files.
-
-    # Transformer encoder — debug run (mini split, no wandb)
-    "transformer_debug": ExperimentConfig(
-        experiment="tracking_vemg2pose",
-        data_split="mini_split",
-        max_epochs=3,
-        early_stopping_patience=999,
-        wandb_enabled=False,
-        network_params={
-            "_target_": "emg2pose.custom_networks.TransformerEMGEncoder",
-            "in_channels": 16,
-            "feature_dim": 64,   # matches default decoder (no decoder_params needed)
-            "num_layers": 2,
-            "num_heads": 4,
-            "dropout": 0.1,
-        },
-        # feature_dim=64 → in_channels for decoder = 64+20 = 84, which is the
-        # YAML default, so no decoder_params needed here.
-    ),
-
-    # Transformer encoder — full training run
-    "transformer_tracking": ExperimentConfig(
-        experiment="tracking_vemg2pose",
-        lr=5e-4,
-        wandb_name="transformer-tracking",
-        wandb_tags=["custom", "transformer", "lstm-decoder"],
-        network_params={
-            "_target_": "emg2pose.custom_networks.TransformerEMGEncoder",
-            "in_channels": 16,
-            "feature_dim": 128,     # larger → must set decoder_params
-            "num_layers": 4,
-            "num_heads": 8,
-            "dropout": 0.1,
-        },
-        decoder_params={
-            "_target_": "emg2pose.networks.SequentialLSTM",
-            "in_channels": 148,     # 128 features + 20 joint state
-            "out_channels": 20,
-            "hidden_size": 512,
-            "num_layers": 2,
-            "scale": 0.01,
-        },
-    ),
-
     # ── Your custom experiments ────────────────────────────────────────────────
-    # Add new ones below. Copy an existing entry and tweak what you want.
+    # Add one-off entries here, or create a new file in experiment_configs/
+    # for a whole group (e.g. experiment_configs/my_arch.py).
 
     "example_custom": ExperimentConfig(
         experiment="tracking_vemg2pose",
-        lr=5e-4,                    # override default lr
+        lr=5e-4,
         batch_size=128,
         max_epochs=200,
         wandb_name="tracking-highbatch-tuned",
@@ -333,7 +302,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
 
     "example_no_aug": ExperimentConfig(
         experiment="tracking_vemg2pose",
-        transforms="basic",         # no rotation augmentation
+        transforms="sharded_basic",
         wandb_name="tracking-no-aug",
         wandb_tags=["ablation", "no-aug"],
         wandb_notes="Ablation: disable rotation augmentation",
@@ -347,6 +316,28 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         wandb_enabled=False,
     ),
 }
+
+
+# ── Auto-discover experiment_configs/*.py ──────────────────────────────────────
+# Each module must expose EXPERIMENTS: dict[str, ExperimentConfig].
+# Conflicting keys raise an error so accidental overwrites are caught early.
+
+def _discover_experiment_configs() -> None:
+    import experiment_configs as _pkg
+
+    for _finder, _mod_name, _is_pkg in pkgutil.iter_modules(_pkg.__path__):
+        _module = importlib.import_module(f"experiment_configs.{_mod_name}")
+        _contrib: dict = getattr(_module, "EXPERIMENTS", {})
+        for _key, _cfg in _contrib.items():
+            if _key in EXPERIMENTS:
+                raise ValueError(
+                    f"Duplicate experiment name '{_key}' found in "
+                    f"experiment_configs/{_mod_name}.py — already registered."
+                )
+            EXPERIMENTS[_key] = _cfg
+
+
+_discover_experiment_configs()
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
