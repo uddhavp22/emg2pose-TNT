@@ -28,9 +28,20 @@ from pytorch_lightning.loggers import WandbLogger
 log = logging.getLogger(__name__)
 
 # PyTorch 2.6 changed torch.load to weights_only=True by default.
-# Lightning checkpoints serialise OmegaConf containers via save_hyperparameters(),
-# so we must allowlist them explicitly.
-torch.serialization.add_safe_globals([DictConfig, ListConfig])
+# Lightning checkpoints contain a full OmegaConf tree (DictConfig, ListConfig,
+# and several internal node/metadata types) via save_hyperparameters(). Rather
+# than enumerate every internal OmegaConf type, we patch torch.load to keep the
+# pre-2.6 default for calls that don't explicitly set weights_only — these all
+# come from Lightning loading our own locally-produced checkpoints.
+_orig_torch_load = torch.load
+
+
+def _compat_torch_load(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _orig_torch_load(*args, **kwargs)
+
+
+torch.load = _compat_torch_load
 
 
 def make_data_module(config: DictConfig):

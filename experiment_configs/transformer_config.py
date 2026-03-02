@@ -30,7 +30,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         early_stopping_patience=999,
         wandb_enabled=False,
         network_params={
-            "_target_": "emg2pose.custom_networks.TransformerEMGEncoder",
+            "_target_": "emg2pose.custom_models.transformer.TransformerEMGEncoder",
             "in_channels": 16,
             "feature_dim": 64,
             "num_layers": 2,
@@ -48,7 +48,7 @@ EXPERIMENTS: dict[str, ExperimentConfig] = {
         wandb_name="transformer-tracking",
         wandb_tags=["transformer", "lstm-decoder"],
         network_params={
-            "_target_": "emg2pose.custom_networks.TransformerEMGEncoder",
+            "_target_": "emg2pose.custom_models.transformer.TransformerEMGEncoder",
             "in_channels": 16,
             "feature_dim": 128,
             "num_layers": 4,

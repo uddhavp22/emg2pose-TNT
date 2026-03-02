@@ -76,9 +76,10 @@ class ExperimentConfig(BaseModel):
     # Leave both as None to use the experiment preset's default network.
     #
     # network_params: dict that fully describes the encoder. Must include
-    #   "_target_" pointing to your class (e.g. "emg2pose.custom_networks.MyNet").
+    #   "_target_" pointing to your class.
     #   All other keys are passed as __init__ kwargs.
-    #   Write your class in emg2pose/custom_networks.py.
+    #   Add new models in emg2pose/custom_models/ (one file per model).
+    #   e.g. "emg2pose.custom_models.transformer.TransformerEMGEncoder"
     #
     # decoder_params: same format for the decoder head. Only needed when your
     #   network's feature_dim differs from the default 64, because the default
@@ -88,7 +89,7 @@ class ExperimentConfig(BaseModel):
     # Example — swap in a Transformer encoder with feature_dim=128:
     #
     #   network_params={
-    #       "_target_": "emg2pose.custom_networks.TransformerEMGEncoder",
+    #       "_target_": "emg2pose.custom_models.transformer.TransformerEMGEncoder",
     #       "in_channels": 16,
     #       "feature_dim": 128,
     #       "num_layers": 4,
